@@ -25,7 +25,7 @@ if "conversation_history" not in st.session_state:
 if "api_call_times" not in st.session_state:
     st.session_state.api_call_times = deque(maxlen=60)  # Store last 60 API call times
 
-st.title("❄️ Snowflake Data Assistant")
+st.title("❄️ Ethos Data Assistant")
 
 # Snowflake connection parameters
 if not st.session_state.snowflake_connected:
