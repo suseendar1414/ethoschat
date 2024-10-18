@@ -240,7 +240,7 @@ def get_openai_response(question, conversation_history):
         return f"Failed to generate a response: {str(e)}"
 
 # Main interface
-st.title("❄️ Snowflake Account Data Assistant")
+st.title("❄️ Ethos Account Data Assistant")
 
 # Snowflake connection parameters
 if not st.session_state.snowflake_connected:
