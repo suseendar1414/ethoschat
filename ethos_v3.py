@@ -247,7 +247,7 @@ if not st.session_state.snowflake_connected:
     with st.sidebar:
         st.header("Snowflake Connection")
         SNOWFLAKE_ACCOUNT = st.text_input("Account", value="au02318.eu-west-2.aws")
-        SNOWFLAKE_USER = st.text_input("Username", value="salesmachinePOC")
+        SNOWFLAKE_USER = st.text_input("Username", value="salesmachinesPOC")
         SNOWFLAKE_PASSWORD = st.text_input("Password", type="password")
         SNOWFLAKE_DATABASE = st.text_input("Database", value="FIRSTDB")
         SNOWFLAKE_SCHEMA = st.text_input("Schema", value="PUBLIC")
