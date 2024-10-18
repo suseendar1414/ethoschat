@@ -7,6 +7,7 @@ import traceback
 from collections import Counter
 from datetime import datetime
 import numpy as np
+from datetime import datetime, date
 
 # Initialize session state variables
 if "snowflake_connected" not in st.session_state:
@@ -39,7 +40,7 @@ def execute_sql_query(query):
 
 def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
-    if isinstance(obj, (datetime, pd.Timestamp)):
+    if isinstance(obj, (datetime, pd.Timestamp, date)):
         return obj.isoformat()
     if isinstance(obj, np.integer):
         return int(obj)
@@ -47,6 +48,8 @@ def json_serial(obj):
         return float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
+    if pd.isna(obj):
+        return None
     raise TypeError(f"Type {type(obj)} not serializable")
 
 def safe_numeric_convert(df, column):
@@ -58,6 +61,29 @@ def safe_numeric_convert(df, column):
 def calculate_age(born):
     today = datetime.now()
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+def get_table_info():
+    try:
+        df = execute_sql_query("SELECT * FROM ACCOUNT LIMIT 1")
+        columns = df.columns.tolist()
+        column_types = df.dtypes.to_dict()
+        return {
+            "table_name": "ACCOUNT",
+            "columns": columns,
+            "column_types": {col: str(dtype) for col, dtype in column_types.items()}
+        }
+    except Exception as e:
+        st.error(f"Error fetching table info: {str(e)}")
+        return None
+
+def get_data_sample():
+    try:
+        df = execute_sql_query("SELECT * FROM ACCOUNT LIMIT 5")
+        return json.loads(json.dumps(df.to_dict('records'), default=json_serial))
+    except Exception as e:
+        st.error(f"Error fetching data sample: {str(e)}")
+        return None
 
 def get_customer_segmentation():
     st.write("Starting customer segmentation analysis...")
@@ -136,7 +162,37 @@ def get_customer_segmentation():
     st.write("Customer segmentation analysis completed")
     return segmentation
 
-def get_openai_response(question, segmentation_data, conversation_history):
+def execute_custom_query(query):
+    try:
+        df = execute_sql_query(query)
+        return df.to_dict('records')
+    except Exception as e:
+        st.error(f"Error executing custom query: {str(e)}")
+        return None
+
+def get_data_summary():
+    try:
+        df = execute_sql_query("SELECT * FROM ACCOUNT")
+        summary = {
+            "row_count": len(df),
+            "column_count": len(df.columns),
+            "numeric_columns": df.select_dtypes(include=[np.number]).columns.tolist(),
+            "categorical_columns": df.select_dtypes(include=['object']).columns.tolist(),
+            "date_columns": df.select_dtypes(include=['datetime64']).columns.tolist(),
+        }
+        return summary
+    except Exception as e:
+        st.error(f"Error fetching data summary: {str(e)}")
+        return None
+
+def truncate_conversation_history(history, max_tokens=1000):
+    total_tokens = sum(len(entry["question"]) + len(entry["answer"]) for entry in history)
+    while total_tokens > max_tokens and history:
+        removed_entry = history.pop(0)
+        total_tokens -= len(removed_entry["question"]) + len(removed_entry["answer"])
+    return history
+
+def get_openai_response(question, conversation_history):
     st.write("Generating OpenAI response...")
     try:
         if not st.session_state.openai_api_key:
@@ -145,16 +201,26 @@ def get_openai_response(question, segmentation_data, conversation_history):
 
         openai_client = OpenAI(api_key=st.session_state.openai_api_key)
         
-        # Convert segmentation_data to JSON-serializable format
-        json_safe_data = json.loads(json.dumps(segmentation_data, default=json_serial))
-        context = f"Customer Segmentation Data: {json.dumps(json_safe_data)}"
+        table_info = get_table_info()
+        data_summary = get_data_summary()
+        
+        context = f"Table Information: {json.dumps(table_info)}\n"
+        context += f"Data Summary: {json.dumps(data_summary)}\n"
+        
+        if 'segmentation_data' in st.session_state and st.session_state.segmentation_data:
+            segmentation_summary = {k: v for k, v in st.session_state.segmentation_data.items() if k != 'age_distribution'}
+            context += f"Segmentation Summary: {json.dumps(segmentation_summary, default=json_serial)}\n"
+        else:
+            context += "Segmentation data is not available.\n"
+        
+        truncated_history = truncate_conversation_history(conversation_history)
         
         messages = [
-            {"role": "system", "content": f"You are a data analyst specializing in customer segmentation. Answer questions about the customer data using this context: {context}. Always provide specific answers using the actual data provided, including customer names and specific numbers where available. If you don't have enough information to answer a question, say so explicitly."}
+            {"role": "system", "content": f"You are an AI assistant specializing in data analysis and customer information. You have access to a database with customer information. Here's a summary of the data: {context}\n\nAnswer questions based on this information. If you need more specific data to answer a question, you can suggest running a SQL query. If you don't have enough information to answer a question, say so explicitly."}
         ]
         
-        # Add conversation history
-        for entry in conversation_history:
+        # Add truncated conversation history
+        for entry in truncated_history:
             messages.append({"role": "user", "content": entry["question"]})
             messages.append({"role": "assistant", "content": entry["answer"]})
         
@@ -214,35 +280,34 @@ if not st.session_state.snowflake_connected:
                 st.error(traceback.format_exc())
 
 if st.session_state.snowflake_connected:
-    st.header("Customer Segmentation Analysis")
+    st.header("Ask about Account Data")
     
     if st.button("Perform Customer Segmentation Analysis"):
         with st.spinner("Analyzing customer data..."):
             segmentation_data = get_customer_segmentation()
-            if "error" not in segmentation_data:
+            if isinstance(segmentation_data, dict) and "error" not in segmentation_data:
                 st.session_state.segmentation_data = segmentation_data
                 st.success("Customer segmentation analysis completed!")
                 st.write("Segmentation data sample:", json.dumps(dict(list(segmentation_data.items())[:5]), indent=2))
             else:
-                st.error(segmentation_data["error"])
+                st.error(segmentation_data.get("error", "An error occurred during segmentation analysis"))
+                st.session_state.segmentation_data = None
     
-    user_question = st.text_input("Ask a question about the customer segmentation:")
+    user_question = st.text_input("Ask a question about the account data:")
     
     if user_question:
-        if st.session_state.segmentation_data is not None:
-            with st.spinner("Generating response..."):
-                st.write(f"Segmentation data available: {len(st.session_state.segmentation_data)} items")
-                answer = get_openai_response(user_question, st.session_state.segmentation_data, st.session_state.conversation_history)
-                st.subheader("Answer:")
-                st.write(answer)
-                st.session_state.conversation_history.append({"question": user_question, "answer": answer})
-        else:
-            st.warning("Please perform Customer Segmentation Analysis first.")
+        with st.spinner("Generating response..."):
+            answer = get_openai_response(user_question, st.session_state.get('conversation_history', []))
+            st.subheader("Answer:")
+            st.write(answer)
+            if 'conversation_history' not in st.session_state:
+                st.session_state.conversation_history = []
+            st.session_state.conversation_history.append({"question": user_question, "answer": answer})
     
     # Display conversation history
     if st.checkbox("Show Conversation History"):
         st.subheader("Conversation History")
-        if st.session_state.conversation_history:
+        if st.session_state.get('conversation_history'):
             for i, entry in enumerate(st.session_state.conversation_history):
                 st.write(f"Q{i+1}: {entry['question']}")
                 st.write(f"A{i+1}: {entry['answer']}")
